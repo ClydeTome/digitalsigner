@@ -11,7 +11,7 @@
 
 <script>
 import * as pdfjsLib from 'pdfjs-dist/webpack';
-import { PDFDocument } from 'pdf-lib';
+import { degrees, PDFDocument, PDFContentStream, PDFOperator, PDFRawStream } from 'pdf-lib';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = require('pdfjs-dist/build/pdf.worker.js');
 
@@ -22,6 +22,7 @@ export default {
       pages: [],
       canvases: [],
       contexts: [],
+      originalPdfData: null,
       signatureStart: false,
       startX: 0,
       startY: 0,
@@ -36,6 +37,7 @@ export default {
         const reader = new FileReader();
         reader.onload = () => {
           const pdfData = new Uint8Array(reader.result);
+          this.originalPdfData = pdfData;
           this.loadPdfData(pdfData);
         };
         reader.readAsArrayBuffer(file);
@@ -100,27 +102,59 @@ export default {
       this.signatureStart = false;
     },
     async savePdf() {
-      const pdfDoc = await PDFDocument.create();
-      for (let i = 0; i < this.pages.length; i++) {
-        const canvas = this.canvases[i];
-        const [width, height] = [canvas.width, canvas.height];
-        const newPage = pdfDoc.addPage([width, height]);
+      // Load the original PDF document
+      const existingPdfBytes = this.originalPdfData;
+      const pdfDoc = await PDFDocument.load(existingPdfBytes);
 
-        const pngUrl = canvas.toDataURL('image/png');
-        const response = await fetch(pngUrl);
-        const pngBlob = await response.blob();
-        const pngBuffer = await new Response(pngBlob).arrayBuffer();
-        const pngUint8Array = new Uint8Array(pngBuffer);
+      // Get the original pages
+      const originalPages = pdfDoc.getPages();
 
-        const signatureImage = await pdfDoc.embedPng(pngUint8Array);
-        newPage.drawImage(signatureImage, {
-          x: 0,
-          y: 0,
-          width: width,
-          height: height,
+      for (let i = 0; i < originalPages.length; i++) {
+        console.log(originalPages[i].getSize());
+        // Convert the signature data URL to bytes
+        const response = await fetch(this.canvases[i].toDataURL('image/png'));
+        const blob = await response.blob();
+
+        // Wrap the FileReader in a promise
+        const signaturePngBytes = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = function () {
+            resolve(new Uint8Array(this.result));
+          };
+          reader.onerror = reject;
+          reader.readAsArrayBuffer(blob);
+        });
+
+        // Embed the signature image
+        const signatureImage = await pdfDoc.embedPng(signaturePngBytes);
+
+        // Get the width and height of the original page
+        const size = originalPages[i].getSize();
+        const originalPageWidth = size.width;
+        const originalPageHeight = size.height;
+
+        // Calculate the signature dimensions
+        const signatureDims = signatureImage.scale(1);
+        const [signatureWidth, signatureHeight] = [signatureDims.width, signatureDims.height];
+
+        // Calculate the scale for the signature image
+        const scale = Math.min(originalPageWidth / signatureWidth, originalPageHeight / signatureHeight);
+
+        // Calculate the position for the signature image
+        const xPos = (originalPageWidth - signatureWidth * scale) / 2;
+        const yPos = (originalPageHeight - signatureHeight * scale) / 2;
+
+        // Draw the signature image on the page
+        originalPages[i].drawImage(signatureImage, {
+          x: xPos,
+          y: yPos,
+          width: signatureWidth * scale,
+          height: signatureHeight * scale,
+          rotate: degrees(0),
         });
       }
 
+      // Save the PDF with the signatures
       const pdfBytes = await pdfDoc.save();
       const blob = new Blob([pdfBytes], { type: 'application/pdf' });
       const url = window.URL.createObjectURL(blob);
@@ -128,6 +162,38 @@ export default {
       link.href = url;
       link.download = 'signed_document.pdf';
       link.click();
+    },
+    // getContentStream(page) {
+    //   return new Promise((resolve, reject) => {
+    //     const stream = page.getOperatorList();
+    //     const chunks = [];
+    //     stream.onData = (chunk) => chunks.push(chunk);
+    //     stream.onError = reject;
+    //     stream.onEnd = () => resolve(Buffer.concat(chunks));
+    //     stream.execute();
+    //   });
+    // },
+
+    getContentStream(page) {
+      return new Promise((resolve, reject) => {
+        const stream = page.stream();
+        const chunks = [];
+        stream.on('data', (chunk) => chunks.push(chunk));
+        stream.on('end', () => resolve(Buffer.concat(chunks)));
+        stream.on('error', reject);
+      });
+    },
+
+    insertSignatureOverlay(contentStream, signatureImageRef, xPos, yPos, width, height, rotation) {
+      const commands = pdfjsLib.PDFOperator.getCommands(contentStream);
+
+      const signatureCommand = `q ${width} 0 0 ${height} ${xPos} ${yPos} cm /${signatureImageRef} Do Q`;
+      const rotationCommand = `q ${Math.cos(rotation)} ${Math.sin(rotation)} ${-Math.sin(rotation)} ${Math.cos(rotation)} 0 0 cm`;
+
+      const modifiedCommands = [rotationCommand, signatureCommand, 'Q'];
+
+      const modifiedContentStream = [...commands, ...modifiedCommands].join('\n');
+      return modifiedContentStream;
     },
   },
 };
