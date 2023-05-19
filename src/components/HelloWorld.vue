@@ -75,15 +75,17 @@ export default {
     handleMouseDown(event) {
       this.signatureStart = true;
       const canvas = event.target;
-      this.startX = event.clientX - canvas.offsetLeft;
-      this.startY = event.clientY - canvas.offsetTop;
+      const rect = canvas.getBoundingClientRect(); // Get the canvas's bounding rectangle
+      this.startX = event.clientX - rect.left; // Calculate the relative X position
+      this.startY = event.clientY - rect.top; // Calculate the relative Y position
     },
     handleMouseMove(event) {
       if (!this.signatureStart) return;
-      
+
       const canvas = event.target;
-      this.endX = event.clientX - canvas.offsetLeft;
-      this.endY = event.clientY - canvas.offsetTop;
+      const rect = canvas.getBoundingClientRect(); // Get the canvas's bounding rectangle
+      this.endX = event.clientX - rect.left; // Calculate the relative X position
+      this.endY = event.clientY - rect.top; // Calculate the relative Y position
 
       const context = canvas.getContext('2d');
       context.beginPath();
